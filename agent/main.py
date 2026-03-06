@@ -102,6 +102,11 @@ def main():
       kodlar buraya
       ```
     - ÖNEMLİ: Eğer projeyi 'my-app' gibi bir alt klasöre kurduysan, dosya yollarının başına o klasörün adını eklemeyi unutma!
+    - ÖNEMLİ: Terminal komutları ve dosya oluşturma işlemleri birbirinden bağımsızdır. Önce tüm terminal komutlarını çalıştır, ardından dosya oluşturma işlemlerine geç.
+    - ÖNEMLİ: Sadece gerekli komutları ve dosyaları oluştur. Gereksiz veya fazladan adımlar atma.
+    - ÖNEMLİ: Terminal komutları ve dosya oluşturma işlemleri sırasında ortaya çıkan hataları göz ardı etme. Hataları tespit eder etmez hemen düzeltmeye çalış. Hata düzeltme adımlarını da aynı formatta yaz.
+    - ÖNEMLİ: Projede terminal komutları ve dosya oluşturma işlemleri arasında sık sık geçiş yapman gerekebilir. Her iki işlemi de birbirinden bağımsız olarak düşün ve sırayla uygula. Önce tüm terminal komutlarını çalıştır, ardından dosya oluşturma işlemlerine geç. Bu şekilde, her adımı net bir şekilde takip edebilir ve hataları daha kolay tespit edip düzeltebilirsin.
+    - ÖNEMLİ: PR açmadan önce mutlaka Build ve Test süreçlerini tamamla. Eğer bu süreçlerde hata alırsan, hataları tespit edip düzeltmeye çalış. Hata düzeltme adımlarını da aynı formatta yaz.
     """
 
     agent_response = ""
