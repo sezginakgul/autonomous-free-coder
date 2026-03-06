@@ -6,6 +6,7 @@ from groq import Groq
 from google import genai
 from openai import OpenAI
 
+# Ortam Değişkenleri
 ISSUE_TITLE = os.environ.get("ISSUE_TITLE", "Bilinmeyen Görev")
 ISSUE_BODY = os.environ.get("ISSUE_BODY", "Detay yok")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -40,11 +41,63 @@ def parse_and_execute(agent_response):
     
     for file_path, file_content in matches:
         file_path = file_path.strip()
-        os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
+        # Dosyanın dizinini oluştur
+        dir_name = os.path.dirname(file_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(file_content)
         print(f"✅ Oluşturuldu/Güncellendi: {file_path}")
+
+def verify_and_test(directory="."):
+    """
+    Uygulamanın build ve test süreçlerini kontrol eder.
+    PR öncesi son güvenlik katmanıdır.
+    """
+    print("\n🔍 [DOĞRULAMA] Build ve Test süreçleri başlatılıyor...")
+    
+    # Mevcut çalışma dizinini sakla
+    original_cwd = os.getcwd()
+    
+    try:
+        # Eğer alt klasöre kurulum yapıldıysa oraya gir
+        if directory != "." and os.path.exists(directory):
+            os.chdir(directory)
+            print(f"📂 Çalışma dizini değiştirildi: {directory}")
+
+        # package.json varsa Node.js projesidir
+        if os.path.exists("package.json"):
+            print("📦 Bağımlılıklar ve Build kontrol ediliyor...")
+            
+            # 1. Build Testi
+            build_res = subprocess.run("npm run build", shell=True, env=dict(os.environ, CI="true"))
+            if build_res.returncode != 0:
+                print("❌ KRİTİK HATA: Build başarısız oldu!")
+                return False
+            print("✅ Build başarılı.")
+
+            # 2. Unit Test Kontrolü (Eğer script tanımlıysa)
+            with open("package.json", "r") as f:
+                content = f.read()
+                if '"test":' in content and "no test specified" not in content:
+                    print("🧪 Testler çalıştırılıyor...")
+                    test_res = subprocess.run("npm test", shell=True, env=dict(os.environ, CI="true"))
+                    if test_res.returncode != 0:
+                        print("❌ KRİTİK HATA: Testler başarısız oldu!")
+                        return False
+                    print("✅ Tüm testler başarıyla geçti.")
+                else:
+                    print("⚠️ Test scripti bulunamadı, bu adım atlanıyor.")
+        
+        return True
+
+    except Exception as e:
+        print(f"⚠️ Doğrulama sırasında teknik hata: {e}")
+        return False
+    finally:
+        # Her durumda ana dizine geri dön
+        os.chdir(original_cwd)
 
 def run_with_groq(prompt):
     print("🚀 Plan A: Groq (Llama 3.3) ile bağlanılıyor...")
@@ -59,7 +112,7 @@ def run_with_gemini(prompt):
     print("🔄 Rate Limit! Plan B: Gemini API'ye geçiliyor...")
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash', # En güncel stabil sürüm
         contents=prompt,
     )
     return response.text
@@ -90,7 +143,12 @@ def main():
     1. Eğer proje sıfırdan kurulacaksa, gerekli terminal komutlarını çalıştır.
     2. Kurulumdan sonra projenin içine girerek gerekli bileşenleri ve kodları oluştur.
 
-    KURALLAR (BUNLARA KESİNLİKLE UY):
+    KURALLAR:
+    - Terminal komutu için: [RUN: komut]
+    - Dosya oluşturmak için: [FILE: yol/dosya.ext] ```kod```
+    - Komutlar non-interactive (-y, --yes) olmalı.
+    - ÖNEMLİ: PR açmadan önce mutlaka 'npm run build' ve varsa 'npm test' süreçlerini düşünerek kod yaz.
+  KURALLAR (BUNLARA KESİNLİKLE UY):
     - Terminal komutu çalıştırmak için her komutu ayrı ayrı şu formatta yaz:
       [RUN: npm create vite@latest my-app -- --template react-ts]
       [RUN: cd my-app && npm install]
@@ -107,10 +165,11 @@ def main():
     - ÖNEMLİ: Terminal komutları ve dosya oluşturma işlemleri sırasında ortaya çıkan hataları göz ardı etme. Hataları tespit eder etmez hemen düzeltmeye çalış. Hata düzeltme adımlarını da aynı formatta yaz.
     - ÖNEMLİ: Projede terminal komutları ve dosya oluşturma işlemleri arasında sık sık geçiş yapman gerekebilir. Her iki işlemi de birbirinden bağımsız olarak düşün ve sırayla uygula. Önce tüm terminal komutlarını çalıştır, ardından dosya oluşturma işlemlerine geç. Bu şekilde, her adımı net bir şekilde takip edebilir ve hataları daha kolay tespit edip düzeltebilirsin.
     - ÖNEMLİ: PR açmadan önce mutlaka Build ve Test süreçlerini tamamla. Eğer bu süreçlerde hata alırsan, hataları tespit edip düzeltmeye çalış. Hata düzeltme adımlarını da aynı formatta yaz.
-    """
+       """
 
     agent_response = ""
 
+    # Model Seçim Döngüsü
     try:
         agent_response = run_with_groq(system_prompt)
     except Exception as e:
@@ -125,11 +184,25 @@ def main():
                 print(f"❌ Tüm API'ler çöktü! Hata: {e3}")
                 sys.exit(1)
 
-    print("\n🤖 Ajanın Ürettiği Çözüm:\n")
-    print(agent_response)
+    print("\n🤖 Ajanın Ürettiği Çözüm Uygulanıyor...\n")
     
-    # Motoru çalıştır
+    # 1. Adım: Dosyaları oluştur ve komutları çalıştır
     parse_and_execute(agent_response)
+
+    # 2. Adım: Build ve Test Doğrulaması (PR Öncesi Filtre)
+    # Ajanın oluşturduğu dizini tahmin et (örn: 'cd my-app' komutundan)
+    project_dir = "."
+    dir_match = re.search(r"\[RUN:\s*cd\s+([a-zA-Z0-9_-]+)", agent_response)
+    if dir_match:
+        project_dir = dir_match.group(1)
+
+    is_valid = verify_and_test(project_dir)
+
+    if is_valid:
+        print("\n✨ BAŞARI: Uygulama build edildi ve testleri geçti. PR aşamasına geçilebilir.")
+    else:
+        print("\n🛑 DURDURULDU: Uygulama build veya test aşamasında hata verdi. PR açılmayacak.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
