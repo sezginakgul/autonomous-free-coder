@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import subprocess
 from groq import Groq
 from google import genai
 from openai import OpenAI
@@ -11,27 +12,39 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
-def parse_and_save_files(agent_response):
-    """Yapay zekanın çıktısındaki dosyaları bulur ve fiziksel olarak oluşturur."""
-    print("\n📂 Dosyalar taranıyor ve oluşturuluyor...")
+def parse_and_execute(agent_response):
+    """Ajanın çıktısındaki hem terminal komutlarını hem de dosyaları işler."""
     
-    # [FILE: dosya/yolu.uzanti] formatını ve altındaki kod bloğunu yakalayan regex
-    pattern = r"\[FILE:\s*(.+?)\]\s*```[a-zA-Z]*\n(.*?)\n```"
-    matches = re.findall(pattern, agent_response, re.DOTALL)
+    # 1. Aşama: Terminal Komutlarını Yakala ve Çalıştır
+    print("\n⚙️ Terminal komutları aranıyor ve çalıştırılıyor...")
+    run_pattern = r"\[RUN:\s*(.+?)\]"
+    commands = re.findall(run_pattern, agent_response)
+    
+    for cmd in commands:
+        cmd = cmd.strip()
+        print(f"🚀 Komut çalıştırılıyor: {cmd}")
+        try:
+            # Komutu gerçek Ubuntu terminalinde çalıştır
+            subprocess.run(cmd, shell=True, check=True)
+            print(f"✅ Komut başarılı: {cmd}")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Komut hatası: {cmd}\nDetay: {e}")
+
+    # 2. Aşama: Dosyaları Yakala ve Diske Yaz
+    print("\n📂 Dosyalar taranıyor ve oluşturuluyor...")
+    file_pattern = r"\[FILE:\s*(.+?)\]\s*```[a-zA-Z]*\n(.*?)\n```"
+    matches = re.findall(file_pattern, agent_response, re.DOTALL)
     
     if not matches:
-        print("⚠️ Uyarı: Çıktı içinde belirtilen formatta dosya bulunamadı.")
-        return
-
+        print("ℹ️ Çıktı içinde eklenecek yeni dosya bulunamadı.")
+    
     for file_path, file_content in matches:
         file_path = file_path.strip()
-        # Eğer alt klasörler gerekiyorsa (örn: src/components) onları otomatik oluştur
         os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
         
-        # Dosyayı diske yaz
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(file_content)
-        print(f"✅ Oluşturuldu: {file_path}")
+        print(f"✅ Oluşturuldu/Güncellendi: {file_path}")
 
 def run_with_groq(prompt):
     print("🚀 Plan A: Groq (Llama 3.3) ile bağlanılıyor...")
@@ -66,7 +79,6 @@ def run_with_github_models(prompt):
 def main():
     print(f"🎯 Yeni Görev Alındı: {ISSUE_TITLE}")
     
-    # Ajanı disipline eden yeni prompt. Dosyaları parse edebilmek için zorunlu kural ekledik.
     system_prompt = f"""
     Sen otonom bir AI yazılım mühendisisin.
     Şu an bir GitHub repousundasın ve aşağıdaki Issue'yu çözmen gerekiyor:
@@ -74,13 +86,22 @@ def main():
     Başlık: {ISSUE_TITLE}
     Detay: {ISSUE_BODY}
     
-    Lütfen kodları üretirken KESİNLİKLE aşağıdaki katı formatı kullan. 
-    Her yeni dosya için bu formatı tekrarla:
-    
-    [FILE: src/dosya_adi.js]
-    ```javascript
-    kodlar buraya gelecek
-    ```
+    GÖREVLERİN:
+    1. Eğer proje sıfırdan kurulacaksa, gerekli terminal komutlarını çalıştır.
+    2. Kurulumdan sonra projenin içine girerek gerekli bileşenleri ve kodları oluştur.
+
+    KURALLAR (BUNLARA KESİNLİKLE UY):
+    - Terminal komutu çalıştırmak için her komutu ayrı ayrı şu formatta yaz:
+      [RUN: npm create vite@latest my-app -- --template react-ts]
+      [RUN: cd my-app && npm install]
+      [RUN: cd my-app && npm install tailwindcss]
+    - Komutların etkileşimli (interactive) OLMAMASINA çok dikkat et. Kurulumların sorusuz geçmesi için --yes veya -y gibi bayraklar (flags) kullan.
+    - Dosya oluşturmak için şu formatı kullan:
+      [FILE: my-app/src/components/Button.tsx]
+      ```tsx
+      kodlar buraya
+      ```
+    - ÖNEMLİ: Eğer projeyi 'my-app' gibi bir alt klasöre kurduysan, dosya yollarının başına o klasörün adını eklemeyi unutma!
     """
 
     agent_response = ""
@@ -102,8 +123,8 @@ def main():
     print("\n🤖 Ajanın Ürettiği Çözüm:\n")
     print(agent_response)
     
-    # Sihirli dokunuş: Loglanan kodları fiziksel dosyalara dönüştür
-    parse_and_save_files(agent_response)
+    # Motoru çalıştır
+    parse_and_execute(agent_response)
 
 if __name__ == "__main__":
     main()
