@@ -16,20 +16,28 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 def parse_and_execute(agent_response):
-    """Ajanın çıktısındaki hem terminal komutlarını hem de dosyaları işler."""
-    
+    """Ajanın çıktısındaki terminal komutlarını ve dosyaları işler.
+
+    Eğer `parse_and_execute.work_dir` ayarlanmışsa tüm komutlar ve dosya yazma o dizin içinde kısıtlanır.
+    Döner: list of (cmd, returncode, stdout, stderr)
+    """
+
     # 1. Aşama: Terminal Komutlarını Yakala ve Çalıştır
     print("\n⚙️ Terminal komutları aranıyor ve çalıştırılıyor...")
     run_pattern = r"\[RUN:\s*(.+?)\]"
     commands = re.findall(run_pattern, agent_response)
-    
+
     cmd_results = []
+    work_dir = getattr(parse_and_execute, "work_dir", None)
     for cmd in commands:
         cmd = cmd.strip()
         print(f"🚀 Komut çalıştırılıyor: {cmd}")
         try:
-            # Komutu çalıştır ve çıktıları yakala
-            res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True, env=os.environ)
+            # Komutu çalıştır ve çıktıları yakala; kısıtlama: cwd varsa orada çalıştır
+            run_kwargs = dict(shell=True, check=False, capture_output=True, text=True, env=os.environ)
+            if work_dir:
+                run_kwargs["cwd"] = work_dir
+            res = subprocess.run(cmd, **run_kwargs)
             stdout = res.stdout or ""
             stderr = res.stderr or ""
             cmd_results.append((cmd, res.returncode, stdout, stderr))
@@ -46,20 +54,31 @@ def parse_and_execute(agent_response):
     print("\n📂 Dosyalar taranıyor ve oluşturuluyor...")
     file_pattern = r"\[FILE:\s*(.+?)\]\s*```[a-zA-Z]*\n(.*?)\n```"
     matches = re.findall(file_pattern, agent_response, re.DOTALL)
-    
+
     if not matches:
         print("ℹ️ Çıktı içinde eklenecek yeni dosya bulunamadı.")
-    
+
     for file_path, file_content in matches:
         file_path = file_path.strip()
-        # Dosyanın dizinini oluştur
-        dir_name = os.path.dirname(file_path)
+        # Eğer çalışma dizini belirlenmişse, tüm dosyaları o dizin altında yaz
+        if work_dir:
+            safe_path = file_path.lstrip("/\\")
+            target_path = os.path.normpath(os.path.join(work_dir, safe_path))
+        else:
+            target_path = file_path
+
+        # Güvenlik: hedefin work_dir içinde olduğundan emin ol
+        if work_dir and not os.path.commonpath([os.path.abspath(work_dir), os.path.abspath(target_path)]) == os.path.abspath(work_dir):
+            print(f"⚠️ Atlanan dosya yolu iş hedefinin dışında: {file_path}")
+            continue
+
+        dir_name = os.path.dirname(target_path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
-        
-        with open(file_path, "w", encoding="utf-8") as f:
+
+        with open(target_path, "w", encoding="utf-8") as f:
             f.write(file_content)
-        print(f"✅ Oluşturuldu/Güncellendi: {file_path}")
+        print(f"✅ Oluşturuldu/Güncellendi: {target_path}")
     return cmd_results
 
 def verify_and_test(directory="."):
@@ -71,6 +90,7 @@ def verify_and_test(directory="."):
     
     # Mevcut çalışma dizinini sakla
     original_cwd = os.getcwd()
+    build_log = ""
     
     try:
         # Eğer alt klasöre kurulum yapıldıysa oraya gir
@@ -104,6 +124,12 @@ def verify_and_test(directory="."):
             build_res = _run("npm run build", retries=3, capture=True)
             build_log = build_res.stdout + "\n" + build_res.stderr if hasattr(build_res, 'stdout') else ""
             if build_res.returncode != 0:
+                # If npm reports 404 / E404 for a package, stop automated reinstall attempts
+                stderr_text = (build_res.stderr or "")
+                if "404 Not Found" in stderr_text or "E404" in stderr_text or "not in this registry" in stderr_text.lower():
+                    print("❌ Build failed due to missing package in registry (404). Otomatik düzeltme yapılmayacak.")
+                    return False, build_log
+
                 print("❌ Build başarısız oldu, bağımlılıkları yeniden yükleyip bir deneme daha yapılıyor...")
                 # Deneysel düzeltme adımları: önce paketleri yükle
                 if os.path.exists("package-lock.json") or os.path.exists("npm-shrinkwrap.json"):
@@ -140,7 +166,7 @@ def verify_and_test(directory="."):
 
     except Exception as e:
         print(f"⚠️ Doğrulama sırasında teknik hata: {e}")
-        return False
+        return False, build_log
     finally:
         # Her durumda ana dizine geri dön
         os.chdir(original_cwd)
@@ -196,6 +222,27 @@ def run_with_github_models(prompt):
     )
     return response.choices[0].message.content
 
+
+def determine_target_dir(agent_response=None):
+    """Determine a single target directory to operate on.
+    Priority: ENV TARGET_DIR -> ISSUE_BODY parsing -> agent_response cd command -> default '.'
+    """
+    env_dir = os.environ.get("TARGET_DIR")
+    if env_dir:
+        return env_dir
+
+    # Look for explicit path in ISSUE_BODY (e.g. "path: pos-ui" or "dir: pos-ui")
+    m = re.search(r'(?mi)(?:path|dir|directory|target):\s*([A-Za-z0-9_\-/.]+)', ISSUE_BODY)
+    if m:
+        return m.group(1).strip()
+
+    if agent_response:
+        dir_match = re.search(r"\[RUN:\s*cd\s+([a-zA-Z0-9_\-./]+)", agent_response)
+        if dir_match:
+            return dir_match.group(1)
+
+    return "."
+
 def main():
     print(f"🎯 Yeni Görev Alındı: {ISSUE_TITLE}")
     
@@ -244,17 +291,32 @@ def main():
 
     print("\n🤖 Ajanın Ürettiği Çözüm Uygulanıyor...\n")
     
-    # 1. Adım: Dosyaları oluştur ve komutları çalıştır
+    # 1. Adım: Hedef dizini belirle ve parse/komut çalıştırmayı o dizinle kısıtla
+    target_dir = determine_target_dir(agent_response)
+    # normalize ve absolute
+    if not os.path.isabs(target_dir):
+        target_dir = os.path.normpath(os.path.join(os.getcwd(), target_dir))
+    if not os.path.exists(target_dir):
+        print(f"⚠️ Hedef dizin bulunamadı, oluşturuluyor: {target_dir}")
+        os.makedirs(target_dir, exist_ok=True)
+
+    parse_and_execute.work_dir = target_dir
+    print(f"📌 Ajan yalnızca bu dizin üzerinde çalışacak: {target_dir}")
+
+    # 1. Adım: Dosyaları oluştur ve komutları çalıştır (hedef dizin içinde)
     cmd_results = parse_and_execute(agent_response)
 
     # 2. Adım: Build ve Test Doğrulaması (PR Öncesi Filtre)
-    # Ajanın oluşturduğu dizini tahmin et (örn: 'cd my-app' komutundan)
-    project_dir = "."
-    dir_match = re.search(r"\[RUN:\s*cd\s+([a-zA-Z0-9_-]+)", agent_response)
-    if dir_match:
-        project_dir = dir_match.group(1)
-
+    # Doğrudan hedef dizini kullan
+    project_dir = parse_and_execute.work_dir if hasattr(parse_and_execute, "work_dir") else determine_target_dir(agent_response)
     is_valid, build_logs = verify_and_test(project_dir)
+
+    # Eğer build logları eksik paket (404) içeriyorsa otomatik düzeltmeye devam etme
+    lower_logs = (build_logs or "").lower()
+    if not is_valid and ("404 not found" in lower_logs or "e404" in lower_logs or "not in this registry" in lower_logs):
+        print("\n❌ Hata: Eksik paket/repository 404 hatası tespit edildi. Otomatik düzeltme yapılmayacak.")
+        print("📣 Lütfen issue'yu güncelleyerek eksik veya hatalı bağımlılığı belirtin; ajan sadece tek bir klasörde işlem yapar.")
+        return
 
     MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "5"))
     attempt = 0
