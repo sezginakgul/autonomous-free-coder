@@ -1,38 +1,57 @@
 import os
 import sys
+import re
 from groq import Groq
 from google import genai
 from openai import OpenAI
 
-# 1. GitHub Actions'tan gelen ortam değişkenleri
 ISSUE_TITLE = os.environ.get("ISSUE_TITLE", "Bilinmeyen Görev")
 ISSUE_BODY = os.environ.get("ISSUE_BODY", "Detay yok")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
+def parse_and_save_files(agent_response):
+    """Yapay zekanın çıktısındaki dosyaları bulur ve fiziksel olarak oluşturur."""
+    print("\n📂 Dosyalar taranıyor ve oluşturuluyor...")
+    
+    # [FILE: dosya/yolu.uzanti] formatını ve altındaki kod bloğunu yakalayan regex
+    pattern = r"\[FILE:\s*(.+?)\]\s*```[a-zA-Z]*\n(.*?)\n```"
+    matches = re.findall(pattern, agent_response, re.DOTALL)
+    
+    if not matches:
+        print("⚠️ Uyarı: Çıktı içinde belirtilen formatta dosya bulunamadı.")
+        return
+
+    for file_path, file_content in matches:
+        file_path = file_path.strip()
+        # Eğer alt klasörler gerekiyorsa (örn: src/components) onları otomatik oluştur
+        os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
+        
+        # Dosyayı diske yaz
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(file_content)
+        print(f"✅ Oluşturuldu: {file_path}")
+
 def run_with_groq(prompt):
-    """Plan A: İşlemi güncel Groq (Llama 3.3) ile yapmayı dener"""
     print("🚀 Plan A: Groq (Llama 3.3) ile bağlanılıyor...")
     client = Groq(api_key=GROQ_API_KEY)
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
-        model="llama-3.3-70b-versatile", # Güncel model
+        model="llama-3.3-70b-versatile",
     )
     return response.choices[0].message.content
 
 def run_with_gemini(prompt):
-    """Plan B: Google'ın yeni SDK'sı ve güncel modeli ile bağlanır"""
     print("🔄 Rate Limit! Plan B: Gemini API'ye geçiliyor...")
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(
-        model='gemini-2.5-flash', # Güncel model
+        model='gemini-2.5-flash',
         contents=prompt,
     )
     return response.text
 
 def run_with_github_models(prompt):
-    """Plan C: İkisi de patlarsa GitHub Models dener"""
     print("🛡️ Çifte Limit! Plan C: GitHub Models API'sine geçiliyor...")
     client = OpenAI(
         base_url="https://models.inference.ai.azure.com",
@@ -47,6 +66,7 @@ def run_with_github_models(prompt):
 def main():
     print(f"🎯 Yeni Görev Alındı: {ISSUE_TITLE}")
     
+    # Ajanı disipline eden yeni prompt. Dosyaları parse edebilmek için zorunlu kural ekledik.
     system_prompt = f"""
     Sen otonom bir AI yazılım mühendisisin.
     Şu an bir GitHub repousundasın ve aşağıdaki Issue'yu çözmen gerekiyor:
@@ -54,41 +74,36 @@ def main():
     Başlık: {ISSUE_TITLE}
     Detay: {ISSUE_BODY}
     
-    Lütfen bu görevi yerine getirmek için hangi dosyalarda nasıl değişiklikler 
-    yapılması gerektiğini adım adım açıkla ve React kodlarını üret.
+    Lütfen kodları üretirken KESİNLİKLE aşağıdaki katı formatı kullan. 
+    Her yeni dosya için bu formatı tekrarla:
+    
+    [FILE: src/dosya_adi.js]
+    ```javascript
+    kodlar buraya gelecek
+    ```
     """
 
     agent_response = ""
 
-    # 3 Katmanlı Şelale Sistemi
     try:
-        if not GROQ_API_KEY:
-            raise ValueError("Groq API Key eksik.")
         agent_response = run_with_groq(system_prompt)
-        print("✅ Groq görevi başarıyla tamamladı!")
-        
     except Exception as e:
-        print(f"⚠️ Groq başarısız oldu: {e}")
+        print(f"⚠️ Groq başarısız: {e}")
         try:
-            if not GEMINI_API_KEY:
-                raise ValueError("Gemini API Key eksik.")
             agent_response = run_with_gemini(system_prompt)
-            print("✅ Gemini görevi başarıyla tamamladı!")
-            
         except Exception as e2:
-            print(f"⚠️ Gemini de başarısız oldu: {e2}")
+            print(f"⚠️ Gemini başarısız: {e2}")
             try:
-                if not GITHUB_TOKEN:
-                    raise ValueError("GitHub Token eksik.")
                 agent_response = run_with_github_models(system_prompt)
-                print("✅ GitHub Models görevi kurtardı!")
-                
             except Exception as e3:
                 print(f"❌ Tüm API'ler çöktü! Hata: {e3}")
                 sys.exit(1)
 
     print("\n🤖 Ajanın Ürettiği Çözüm:\n")
     print(agent_response)
+    
+    # Sihirli dokunuş: Loglanan kodları fiziksel dosyalara dönüştür
+    parse_and_save_files(agent_response)
 
 if __name__ == "__main__":
     main()

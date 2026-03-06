@@ -39,3 +39,27 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           python agent/main.py
+
+      - name: Değişiklikleri Git ile İşle ve PR Aç
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Git ayarlarını yap (Ajan adına)
+          git config --global user.name "AI Coder Agent"
+          git config --global user.email "actions@github.com"
+          
+          # Eğer ajanın oluşturduğu yeni dosyalar varsa işleme başla
+          if [ -n "$(git status --porcelain)" ]; then
+            BRANCH_NAME="ai-feature-issue-${{ github.event.issue.number }}"
+            
+            # Yeni bir dal oluştur ve dosyaları ekle
+            git checkout -b $BRANCH_NAME
+            git add .
+            git commit -m "feat: Issue #${{ github.event.issue.number }} için AI çözümü eklendi"
+            git push origin $BRANCH_NAME
+            
+            # GitHub CLI (gh) kullanarak otomatik Pull Request aç
+            gh pr create --title "🤖 AI Çözümü: ${{ github.event.issue.title }}" --body "Bu Pull Request, #${{ github.event.issue.number }} numaralı issue için otomatik olarak oluşturulmuştur. Lütfen dosyaları inceleyin." --head $BRANCH_NAME --base main
+          else
+            echo "Değişen bir dosya bulunamadı."
+          fi
