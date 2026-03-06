@@ -1,4 +1,4 @@
 antigravity
 groq
-google-generativeai
+google-genai
 openai

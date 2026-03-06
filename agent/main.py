@@ -1,37 +1,38 @@
 import os
 import sys
-import time
 from groq import Groq
-import google.generativeai as genai
+from google import genai
 from openai import OpenAI
 
-# 1. GitHub Actions'tan gelen ortam değişkenlerini alıyoruz
+# 1. GitHub Actions'tan gelen ortam değişkenleri
 ISSUE_TITLE = os.environ.get("ISSUE_TITLE", "Bilinmeyen Görev")
 ISSUE_BODY = os.environ.get("ISSUE_BODY", "Detay yok")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") # Plan C için GitHub Token
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 def run_with_groq(prompt):
-    """Plan A: İşlemi çok hızlı olan Groq (Llama 3) ile yapmayı dener"""
-    print("🚀 Plan A: Groq (Llama 3) ile bağlanılıyor...")
+    """Plan A: İşlemi güncel Groq (Llama 3.3) ile yapmayı dener"""
+    print("🚀 Plan A: Groq (Llama 3.3) ile bağlanılıyor...")
     client = Groq(api_key=GROQ_API_KEY)
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
-        model="llama3-70b-8192", 
+        model="llama-3.3-70b-versatile", # Güncel model
     )
     return response.choices[0].message.content
 
 def run_with_gemini(prompt):
-    """Plan B: Groq limite takılırsa ücretsiz Gemini API'sine geçer"""
+    """Plan B: Google'ın yeni SDK'sı ve güncel modeli ile bağlanır"""
     print("🔄 Rate Limit! Plan B: Gemini API'ye geçiliyor...")
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash') 
-    response = model.generate_content(prompt)
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model='gemini-2.5-flash', # Güncel model
+        contents=prompt,
+    )
     return response.text
 
 def run_with_github_models(prompt):
-    """Plan C: İkisi de patlarsa GitHub Models (GPT-4o-mini) devreye girer"""
+    """Plan C: İkisi de patlarsa GitHub Models dener"""
     print("🛡️ Çifte Limit! Plan C: GitHub Models API'sine geçiliyor...")
     client = OpenAI(
         base_url="https://models.inference.ai.azure.com",
@@ -54,12 +55,12 @@ def main():
     Detay: {ISSUE_BODY}
     
     Lütfen bu görevi yerine getirmek için hangi dosyalarda nasıl değişiklikler 
-    yapılması gerektiğini adım adım açıkla ve kodları üret.
+    yapılması gerektiğini adım adım açıkla ve React kodlarını üret.
     """
 
     agent_response = ""
 
-    # 3 Katmanlı Rate-Limit Koruması (Şelale Sistemi)
+    # 3 Katmanlı Şelale Sistemi
     try:
         if not GROQ_API_KEY:
             raise ValueError("Groq API Key eksik.")
@@ -80,10 +81,10 @@ def main():
                 if not GITHUB_TOKEN:
                     raise ValueError("GitHub Token eksik.")
                 agent_response = run_with_github_models(system_prompt)
-                print("✅ GitHub Models görevi kurtardı ve tamamladı!")
+                print("✅ GitHub Models görevi kurtardı!")
                 
             except Exception as e3:
-                print(f"❌ Tüm API'ler (Plan A, B, C) çöktü! Hata: {e3}")
+                print(f"❌ Tüm API'ler çöktü! Hata: {e3}")
                 sys.exit(1)
 
     print("\n🤖 Ajanın Ürettiği Çözüm:\n")
