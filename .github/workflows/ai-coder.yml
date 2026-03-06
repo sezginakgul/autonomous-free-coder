@@ -1,0 +1,41 @@
+name: Autonomous Free Coder
+
+on:
+  issues:
+    types: [opened] # Sadece yeni bir issue açıldığında tetiklenir
+
+jobs:
+  ai-agent:
+    runs-on: ubuntu-latest # GitHub'ın ücretsiz sağladığı sunucu
+    permissions:
+      contents: write       # Kodu değiştirmek için yetki
+      pull-requests: write  # PR açmak için yetki
+      issues: write         # Issue'ya yorum yapabilmek için yetki
+
+    steps:
+      - name: Repoyu Klonla (Checkout)
+        uses: actions/checkout@v4
+
+      - name: Python Ortamını Kur
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Antigravity ve Bağımlılıkları Yükle
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agent/requirements.txt
+
+      - name: Yapay Zeka Ajanını Çalıştır (Otonom Kodlama)
+        env:
+          # Ajanımızın kullanacağı ücretsiz API anahtarları (Gizli tutulacak)
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Issue detaylarını ajana gönderiyoruz
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python agent/main.py

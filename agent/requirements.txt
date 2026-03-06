@@ -1,0 +1,4 @@
+antigravity
+groq
+google-generativeai
+openai
