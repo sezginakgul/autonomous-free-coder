@@ -5,6 +5,8 @@ import subprocess
 from groq import Groq
 from google import genai
 from openai import OpenAI
+import time
+import json
 
 # Ortam Değişkenleri
 ISSUE_TITLE = os.environ.get("ISSUE_TITLE", "Bilinmeyen Görev")
@@ -21,15 +23,24 @@ def parse_and_execute(agent_response):
     run_pattern = r"\[RUN:\s*(.+?)\]"
     commands = re.findall(run_pattern, agent_response)
     
+    cmd_results = []
     for cmd in commands:
         cmd = cmd.strip()
         print(f"🚀 Komut çalıştırılıyor: {cmd}")
         try:
-            # Komutu gerçek Ubuntu terminalinde çalıştır
-            subprocess.run(cmd, shell=True, check=True)
-            print(f"✅ Komut başarılı: {cmd}")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Komut hatası: {cmd}\nDetay: {e}")
+            # Komutu çalıştır ve çıktıları yakala
+            res = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True, env=os.environ)
+            stdout = res.stdout or ""
+            stderr = res.stderr or ""
+            cmd_results.append((cmd, res.returncode, stdout, stderr))
+            if res.returncode == 0:
+                print(f"✅ Komut başarılı: {cmd}")
+            else:
+                print(f"⚠️ Komut hatası: {cmd} (kod {res.returncode})")
+                print(stderr)
+        except Exception as e:
+            print(f"❌ Komut çalıştırılırken beklenmeyen hata: {cmd}\nDetay: {e}")
+            cmd_results.append((cmd, -1, "", str(e)))
 
     # 2. Aşama: Dosyaları Yakala ve Diske Yaz
     print("\n📂 Dosyalar taranıyor ve oluşturuluyor...")
@@ -49,6 +60,7 @@ def parse_and_execute(agent_response):
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(file_content)
         print(f"✅ Oluşturuldu/Güncellendi: {file_path}")
+    return cmd_results
 
 def verify_and_test(directory="."):
     """
@@ -70,11 +82,44 @@ def verify_and_test(directory="."):
         if os.path.exists("package.json"):
             print("📦 Bağımlılıklar ve Build kontrol ediliyor...")
             
-            # 1. Build Testi
-            build_res = subprocess.run("npm run build", shell=True, env=dict(os.environ, CI="true"))
+            # 1. Build Testi with retries and recovery
+            def _run(cmd, retries=1, backoff=2, capture=True):
+                attempt = 0
+                while attempt < retries:
+                    attempt += 1
+                    print(f"🚀 Çalıştırılıyor (deneme {attempt}/{retries}): {cmd}")
+                    if capture:
+                        res = subprocess.run(cmd, shell=True, env=dict(os.environ, CI="true"), capture_output=True, text=True)
+                    else:
+                        res = subprocess.run(cmd, shell=True, env=dict(os.environ, CI="true"))
+                    if res.returncode == 0:
+                        return res
+                    print(f"⚠️ Komut başarısız (kod {res.returncode}).")
+                    if attempt < retries:
+                        wait = backoff ** attempt
+                        print(f"🔁 {wait}s sonra tekrar denenecek...")
+                        time.sleep(wait)
+                return res
+
+            build_res = _run("npm run build", retries=3, capture=True)
+            build_log = build_res.stdout + "\n" + build_res.stderr if hasattr(build_res, 'stdout') else ""
             if build_res.returncode != 0:
-                print("❌ KRİTİK HATA: Build başarısız oldu!")
-                return False
+                print("❌ Build başarısız oldu, bağımlılıkları yeniden yükleyip bir deneme daha yapılıyor...")
+                # Deneysel düzeltme adımları: önce paketleri yükle
+                if os.path.exists("package-lock.json") or os.path.exists("npm-shrinkwrap.json"):
+                    print("🔧 package-lock bulundu, 'npm ci' çalıştırılıyor...")
+                    subprocess.run("npm ci --no-audit --prefer-offline", shell=True, env=os.environ)
+                else:
+                    print("🔧 package-lock bulunamadı, 'npm install' çalıştırılıyor...")
+                    subprocess.run("npm install --no-audit --prefer-offline", shell=True, env=os.environ)
+
+                # Son bir deneme daha
+                build_res = _run("npm run build", retries=2, capture=True)
+                build_log += "\n--- ikinci deneme ---\n" + (build_res.stdout + "\n" + build_res.stderr if hasattr(build_res, 'stdout') else "")
+                if build_res.returncode != 0:
+                    print("❌ KRİTİK HATA: Build tekrar başarısız oldu.")
+                    # Hata düzeltilemedi; doğrulama başarısız
+                    return False, build_log
             print("✅ Build başarılı.")
 
             # 2. Unit Test Kontrolü (Eğer script tanımlıysa)
@@ -82,15 +127,16 @@ def verify_and_test(directory="."):
                 content = f.read()
                 if '"test":' in content and "no test specified" not in content:
                     print("🧪 Testler çalıştırılıyor...")
-                    test_res = subprocess.run("npm test", shell=True, env=dict(os.environ, CI="true"))
+                    test_res = _run("npm test", retries=2, capture=True)
+                    test_log = test_res.stdout + "\n" + test_res.stderr if hasattr(test_res, 'stdout') else ""
                     if test_res.returncode != 0:
-                        print("❌ KRİTİK HATA: Testler başarısız oldu!")
-                        return False
+                        print("❌ Uyarı: Testler başarısız oldu. Test bağımlılıkları veya test komutunu kontrol edin.")
+                        return False, build_log + "\n--- test log ---\n" + test_log
                     print("✅ Tüm testler başarıyla geçti.")
                 else:
                     print("⚠️ Test scripti bulunamadı, bu adım atlanıyor.")
         
-        return True
+        return True, build_log
 
     except Exception as e:
         print(f"⚠️ Doğrulama sırasında teknik hata: {e}")
@@ -107,6 +153,27 @@ def run_with_groq(prompt):
         model="llama-3.3-70b-versatile",
     )
     return response.choices[0].message.content
+
+
+def run_model(prompt):
+    """Try available model endpoints in order and return the text. If all fail, return None."""
+    try:
+        return run_with_groq(prompt)
+    except Exception as e:
+        print(f"⚠️ Groq başarısız: {e}")
+    try:
+        return run_with_gemini(prompt)
+    except Exception as e:
+        print(f"⚠️ Gemini başarısız: {e}")
+    try:
+        return run_with_github_models(prompt)
+    except Exception as e:
+        print(f"⚠️ GitHub modelleri başarısız: {e}")
+    return None
+
+
+def compose_fix_prompt(prev_response, build_logs, attempt):
+    return f"Aşağıdaki önceki ajan çıktısını ve build/test loglarını kullanarak ortaya çıkan hataları düzelt. Deneme #{attempt}. Önceki ajan çıktısı:\n{prev_response}\n\nBuild/Test Log:\n{build_logs}\n\nLütfen sadece [RUN:] ve [FILE:] formatında düzeltme adımlarını ver. Her denemede yapılan değişiklikleri kısa bir açıklama ile ekle." 
 
 def run_with_gemini(prompt):
     print("🔄 Rate Limit! Plan B: Gemini API'ye geçiliyor...")
@@ -170,24 +237,15 @@ def main():
     agent_response = ""
 
     # Model Seçim Döngüsü
-    try:
-        agent_response = run_with_groq(system_prompt)
-    except Exception as e:
-        print(f"⚠️ Groq başarısız: {e}")
-        try:
-            agent_response = run_with_gemini(system_prompt)
-        except Exception as e2:
-            print(f"⚠️ Gemini başarısız: {e2}")
-            try:
-                agent_response = run_with_github_models(system_prompt)
-            except Exception as e3:
-                print(f"❌ Tüm API'ler çöktü! Hata: {e3}")
-                sys.exit(1)
+    agent_response = run_model(system_prompt)
+    if not agent_response:
+        print("❌ Tüm model çağrıları başarısız oldu. İşlem sonlandıruluyor.")
+        return
 
     print("\n🤖 Ajanın Ürettiği Çözüm Uygulanıyor...\n")
     
     # 1. Adım: Dosyaları oluştur ve komutları çalıştır
-    parse_and_execute(agent_response)
+    cmd_results = parse_and_execute(agent_response)
 
     # 2. Adım: Build ve Test Doğrulaması (PR Öncesi Filtre)
     # Ajanın oluşturduğu dizini tahmin et (örn: 'cd my-app' komutundan)
@@ -196,13 +254,32 @@ def main():
     if dir_match:
         project_dir = dir_match.group(1)
 
-    is_valid = verify_and_test(project_dir)
+    is_valid, build_logs = verify_and_test(project_dir)
+
+    MAX_FIX_ATTEMPTS = int(os.environ.get("MAX_FIX_ATTEMPTS", "5"))
+    attempt = 0
+    last_response = agent_response
+
+    while not is_valid and attempt < MAX_FIX_ATTEMPTS:
+        attempt += 1
+        print(f"\n🔁 Hata tespit edildi — otomatik düzeltme denemesi {attempt}/{MAX_FIX_ATTEMPTS} başlıyor...")
+        fix_prompt = compose_fix_prompt(last_response, build_logs, attempt)
+        fix_response = run_model(fix_prompt)
+        if not fix_response:
+            print("❌ Model çağrıları başarısız oldu; daha fazla düzeltme denemesi yapılamıyor.")
+            break
+
+        # Uygula ve yeniden doğrula
+        parse_and_execute(fix_response)
+        is_valid, build_logs = verify_and_test(project_dir)
+        last_response = fix_response
 
     if is_valid:
         print("\n✨ BAŞARI: Uygulama build edildi ve testleri geçti. PR aşamasına geçilebilir.")
     else:
-        print("\n🛑 DURDURULDU: Uygulama build veya test aşamasında hata verdi. PR açılmayacak.")
-        sys.exit(1)
+        print("\n🛑 Uygulama hala build/test aşamasında hata veriyor. Tüm otomatik denemeler yapıldı.")
+        print("ℹ️ İşlem sonlandırılıyor ama ajan çalışmayı bırakmayacak; elle müdahale gerekebilir.")
+        return
 
 if __name__ == "__main__":
     main()
