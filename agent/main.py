@@ -245,8 +245,23 @@ def determine_target_dir(agent_response=None):
 
 def main():
     print(f"🎯 Yeni Görev Alındı: {ISSUE_TITLE}")
-    
+    # Kılavuz dosyasını yükle (varsa) ve sistemi bilgilendir
+    guidelines_path = os.path.join(os.path.dirname(__file__), "REACT_APP_PROFESSIONAL_GUIDELINES.md")
+    guidelines_text = ""
+    try:
+        if os.path.exists(guidelines_path):
+            with open(guidelines_path, "r", encoding="utf-8") as gf:
+                guidelines_text = gf.read()
+                print("📘 REACT_APP_PROFESSIONAL_GUIDELINES.md yüklendi ve agent prompt'una eklendi.")
+        else:
+            print("⚠️ Kılavuz dosyası bulunamadı; agent varsayılan kurallarla devam edecek.")
+    except Exception as e:
+        print(f"⚠️ Kılavuz dosyası okunurken hata: {e}")
+
     system_prompt = f"""
+KILAVUZ:
+{guidelines_text}
+
     Sen otonom bir AI yazılım mühendisisin.
     Şu an bir GitHub repousundasın ve aşağıdaki Issue'yu çözmen gerekiyor:
     
